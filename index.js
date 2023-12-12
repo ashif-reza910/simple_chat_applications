@@ -2,6 +2,13 @@ const express = require("express");
 const cors = require("cors");
 
 const path = require("path");
+const {
+  userJoin,
+  getRoomUsers,
+  userLeave,
+  getCurrentUser,
+} = require("./public/utils/users");
+const { formatMessage } = require("./public/utils/message");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -21,35 +28,70 @@ const io = require("socket.io")(server);
 
 app.use(express.static(path.join(__dirname, "public")));
 
-// connection alive
+app.get("/", (req, res) => {
+  const filePath = path.join(__dirname, "public", "group.html");
+  res.sendFile(filePath);
+});
+
+// create socket - attach with current socket
 io.on("connection", onConnected);
-let socketsConected = new Set();
+const botName = "ChatCord Bot";
 
 function onConnected(socket) {
-  socket.on("user:add", (name) => {
-    socket_id = socket.id;
-    socketsConected.add({ socketId: socket_id, name: name });
-    console.log("a new user connected ", socket_id, name);
+  console.log("a new user connected ", socket.id);
 
-    const socketsArray = [...socketsConected];
-    io.emit("total:connected", socketsArray);
-  });
+  socket.on("joinRoom", ({ username, room }) => {
+    const user = userJoin(socket.id, username, room);
+    socket.join(user.room);
 
-  socket.on("message:send", (data) => {
-    socket.broadcast.emit("message:recieve", data);
-  });
+    // Welcome current user
+    socket.emit("message", formatMessage(botName, "Welcome to ChatCord!"));
 
-  socket.on("disconnect", () => {
-    const socketsArray = [...socketsConected];
-    socketsArray.forEach((entry) => {
-      if (entry.socketId === socket.id) {
-        socketsConected.delete(entry);
+    // io.emit("total:connected", getRoomUsers);
+
+    // Broadcast when a user connects
+    socket.broadcast
+      .to(user.room)
+      .emit(
+        "message",
+        formatMessage(botName, `${user.username} has joined the chat`)
+      );
+
+    // Send users and room info
+    io.to(user.room).emit("roomUsers", {
+      room: user.room,
+      users: getRoomUsers(user.room),
+    });
+
+    // Listen for chatMessage
+    socket.on("chatMessage", (msg) => {
+      const user = getCurrentUser(socket.id);
+      socket.broadcast
+        .to(user.room)
+        .emit("message", formatMessage(user.username, msg));
+    });
+
+    // feedback
+    socket.on("feedback:send", (data) => {
+      socket.broadcast.to(user.room).emit("feedback:recieved", data);
+    });
+
+    // Runs when client disconnects
+    socket.on("disconnect", () => {
+      const user = userLeave(socket.id);
+
+      if (user) {
+        io.to(user.room).emit(
+          "message",
+          formatMessage(botName, `${user.username} has left the chat`)
+        );
+
+        // Send users and room info
+        io.to(user.room).emit("roomUsers", {
+          room: user.room,
+          users: getRoomUsers(user.room),
+        });
       }
     });
-    io.emit("total:connected", socketsArray);
-  });
-
-  socket.on("feedback:send", (data) => {
-    socket.broadcast.emit("feedback:recieved", data);
   });
 }
